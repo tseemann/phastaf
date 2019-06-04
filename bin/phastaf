@@ -1,0 +1,331 @@
+#!/usr/bin/env perl
+use strict;
+use FindBin;
+use File::Path qw(make_path remove_tree);
+use File::Basename;
+use File::Spec;
+use File::Copy;
+use File::Temp;
+use List::Util qw(min max);
+use English qw(-no_match_vars);
+use Cwd qw(realpath getcwd);
+use POSIX qw(strftime);
+
+# Globals
+my $EXE = basename($PROGRAM_NAME);
+my $VERSION = "0.1.0";
+my $AUTHOR = "Torsten Seemann et al";
+my $URL = "https://github.com/tseemann/phastaf";
+my $APPDIR = realpath( "$FindBin::RealBin/.." );
+my $DBDIR = realpath( "$APPDIR/db" );
+my $DBFILE = realpath( "$DBDIR/phastaf.dmnd" );
+my $LOGTMP = File::Temp->new();
+my $LOGFILE = $LOGTMP->filename;
+
+my @CMDLINE = ($0, @ARGV);    # save this for printing to log later
+my $t0 = time;                # basetime to measure running duration
+
+my %VERSION = (
+  'bedtools'  => 'bedtools -version',
+  'any2fasta' => 'any2fasta -v',
+  'diamond'   => 'diamond version',
+  'sort'      => 'sort --version',
+);
+
+my @DIAMOND_COLS = qw(qseqid qstart qend sseqid pident);
+
+# Options
+my(@Options, $version, $cpus, $outdir, $force,
+             $db, $keepfiles, $mingenes, $igff);
+setOptions();
+
+# Say hello
+msg("Hello", $ENV{USER} || 'stranger');
+msg("You ran: @CMDLINE");
+msg("This is $EXE $VERSION");
+msg("Written by $AUTHOR");
+msg("Homepage is $URL");
+msg("Operating system is $OSNAME");
+msg("Perl version is $PERL_VERSION");
+
+# Hardware stats
+my $CORES = num_cpus();
+msg("Machine has $CORES CPU cores");
+
+# Check options
+$outdir or err("Please specify output folder with --outdir");
+$cpus ||= $CORES;  # if cpus==0 use all available
+$cpus > 0 or err("Invalid --cpus $cpus");
+
+# Check deps
+check_deps();
+
+# Make output folder
+make_folder($outdir);
+$outdir = File::Spec->rel2abs($outdir);
+my $input = File::Spec->rel2abs(shift @ARGV);
+
+# Switch to output folder
+msg("Changing into folder: $outdir");
+my $cwd = getcwd();
+chdir($outdir);
+
+# Switch to permanent logfile
+my $real_log = "$EXE.log";
+copy($LOGFILE, $real_log);
+$LOGFILE = $real_log;
+
+# .........................................................................
+# MAIN PROGRAM
+
+my $fasta = "contigs.fna";
+run_cmd("any2fasta $input > $fasta");
+
+my $coords = "diamond.coords";
+run_cmd("diamond blastx --threads $cpus --query $fasta --db $db --id 75"
+       ." --outfmt 6 @DIAMOND_COLS -k 0 --evalue 1E-6 --query-gencode 11 > $coords"); 
+
+# convert diamond to BED
+my $tab = read_tsv($coords);
+for my $row (@$tab) {
+  if ($row->[1] > $row->[2]) {
+    ($row->[1], $row->[2]) = ($row->[2], $row->[1]);
+    push @$row, '-';
+  }
+  else {
+    push @$row, '+';
+  }
+  $row->[1]--;  # to 0-based
+}
+
+# sort by CHR, START
+$tab = [ sort { ($a->[0] cmp $b->[0]) || ($a->[1] <=> $b->[1]) } @$tab ];
+my $bed1 = "$coords.bed";
+write_tsv($bed1, $tab);
+
+# merge regions
+my $bed2 = "phage.bed";
+run_cmd("bedtools merge -i $bed1 -d $igff -c 1 -o count > $bed2");
+msg("Wrote: $bed2");
+
+# END MAIN PROGRAM
+# .........................................................................
+
+# Say our goodbyes
+my $wallsecs = time - $t0;
+my($mins,$secs) = ( int($wallsecs/60), $wallsecs % 60 );
+msg("Walltime used: $mins min $secs sec");
+
+# Inspiration
+my @motd = (
+  "Found a bug in $EXE? Post it at $URL/issues",
+  "Have a suggestion for $EXE? Tell me at $URL/issues",
+  "The $EXE manual is at $URL/blob/master/README.md",
+);
+srand( $PROCESS_ID + $t0 ); # seed
+msg( $motd[ int(rand(scalar(@motd))) ] );
+msg("Done.");
+
+# Exit nicely
+exit(0);
+
+#----------------------------------------------------------------------
+sub check_deps {
+  my($exit) = @_;
+  # Check we have the required binaries
+  my @exe = sort keys %VERSION;
+  for my $exe (@exe) {
+    my $fullexe = find_exe($exe);
+    if ($fullexe) {
+      my $ver = '(version unknown)';
+      if (my $vcmd = $VERSION{$exe}) {
+        ($ver) = qx($vcmd);
+        chomp $ver;
+        $ver or err("Could not determine version of '$exe' via '$vcmd'");
+      }
+      msg("Using $exe - $fullexe | $ver");
+    }
+    else {
+      err("Could not find '$exe' - please install it.");
+    }
+  }
+  exit(0) if $exit;
+}
+
+#----------------------------------------------------------------------
+sub make_folder {
+  my($outdir) = @_;
+  $outdir or err("make_folder() provided undefined path");
+  if (-d $outdir) {
+    if ($force) {
+      msg("Forced overwrite of existing --outdir $outdir");
+    }
+    else {
+      err("Folder '$outdir' already exists. Try using --force");
+    }
+  }
+  else {
+    make_path($outdir);
+  }
+}
+
+#----------------------------------------------------------------------
+sub run_cmd {
+  my($cmd, $label) = @_;
+
+  if (!defined $label) {
+    $cmd =~ m/^(\S+)/;
+    $label ||= $1;
+  }
+  $label = "[$label] " if defined $label and $label ne '';
+
+  $cmd = "($cmd) 2>&1 | sed 's/^/$label/' | tee -a $LOGFILE";
+  msg("Running: $cmd");
+  system($cmd)==0 or err("Error $? running command: $!");
+}
+
+#----------------------------------------------------------------------
+sub find_exe {
+  my($bin) = shift;
+  for my $dir (File::Spec->path) {
+    my $exe = File::Spec->catfile($dir, $bin);
+    return $exe if -x $exe;
+  }
+  return;
+}
+
+#----------------------------------------------------------------------
+sub msg {
+  my $msg = "[$EXE] @_\n";
+  print STDERR $msg;
+  open my $log, '>>', $LOGFILE;
+  print $log $msg;
+  close $log;
+}
+
+#----------------------------------------------------------------------
+sub err {
+  msg(@_);
+  exit(1);
+}
+
+#----------------------------------------------------------------------
+sub num_cpus {
+  my($num)= qx(getconf _NPROCESSORS_ONLN); # POSIX
+  chomp $num;
+  return $num || 1;
+}
+
+#----------------------------------------------------------------------
+sub version {
+  print "$EXE $VERSION\n";
+  exit(0);
+}
+
+#----------------------------------------------------------------------
+sub read_tsv {
+  my($fname) = @_;
+  my @matrix;
+  open my $TSV, '<', $fname;
+  while (<$TSV>) {
+    chomp;
+    my @x = split m/\t/;
+    push @matrix, [ @x ];
+  }
+  close $TSV;
+  return \@matrix;
+}
+
+#----------------------------------------------------------------------
+sub write_tsv {
+  my($fname, $matrix) = @_;
+  open my $TSV, '>', $fname;
+  for my $row (@$matrix) {
+    print $TSV join("\t", @$row), "\n";
+  }
+  close $TSV;
+}
+
+#----------------------------------------------------------------------
+sub read_lines {
+  my($fname) = @_;
+  open my $FILE, '<', $fname or err("Could not open $fname");
+  my @lines = <$FILE>;
+  close $FILE;
+  return @lines
+}
+
+#----------------------------------------------------------------------
+sub write_lines {
+  my($fname, @lines) = @_;
+  open my $FILE, '>', $fname or err("Could not write to $fname");
+  print $FILE @lines;
+  close $FILE;
+}
+
+#----------------------------------------------------------------------
+# Option setting routines
+
+sub setOptions {
+  use Getopt::Long;
+
+  @Options = (
+    "OPTIONS",
+    {OPT=>"help",       VAR=>\&usage,                    DESC=>"This help"},
+    {OPT=>"version!",   VAR=>\&version,                  DESC=>"Print version and exit"},
+    {OPT=>"check!",     VAR=>\&check_deps,               DESC=>"Check dependencies are installed"},
+    {OPT=>"force!",     VAR=>\$force,     DEFAULT=>0,    DESC=>"Force overwite of existing output folder"},
+    {OPT=>"keepfiles!", VAR=>\$keepfiles, DEFAULT=>0,    DESC=>"Keep intermediate files"},
+    {OPT=>"outdir=s",   VAR=>\$outdir,    DEFAULT=>'',   DESC=>"Output folder"},
+    {OPT=>"db=s",       VAR=>\$db,        DEFAULT=>$DBFILE,  DESC=>"Diamond database of phage proteins"},
+    {OPT=>"cpus=i",     VAR=>\$cpus,      DEFAULT=>1, DESC=>"Number of CPUs to use (0=ALL)"},
+    {OPT=>"igff=i",     VAR=>\$igff,      DEFAULT=>2000, DESC=>"Intergenic fuzz factor"},
+    {OPT=>"mingenes=i", VAR=>\$mingenes,  DEFAULT=>5, DESC=>"Minimum genes in cluster"},
+  );
+
+  ! @ARGV && usage(1);
+
+  &GetOptions(map {$_->{OPT}, $_->{VAR}} grep { ref } @Options) || usage(1);
+
+  # Now setup default values.
+  foreach (@Options) {
+    if (ref $_ && defined($_->{DEFAULT}) && !defined(${$_->{VAR}})) {
+      ${$_->{VAR}} = $_->{DEFAULT};
+    }
+  }
+}
+
+#----------------------------------------------------------------------
+sub usage {
+  my($exitcode) = @_;
+  $exitcode = 0 if $exitcode eq 'help'; # what gets passed by getopt func ref
+  $exitcode ||= 0;
+
+  select STDERR if $exitcode; # write to STDERR if exitcode is error
+
+  print "SYNOPSIS\n  Find phage regions in bacterial genomes\n";
+  print "USAGE\n  $EXE [options] --outdir OUTDIR contigs.{fna,gbk,gff}[.gz]\n";
+  foreach (@Options) {
+    if (ref) {
+      my $def = $_->{DEFAULT};
+      if (defined $def) {
+        $def = 'OFF' if $_->{OPT} =~ m/!$/;
+        $def = "'$def'" if $_->{OPT} =~ m/=s$/;
+        $def = " (default: $def)";
+      }
+      $_->{OPT} =~ s/!$//;
+      $_->{OPT} =~ s/=s$/ XXX/;
+      $_->{OPT} =~ s/=i$/ N/;
+      $_->{OPT} =~ s/=f$/ n.nn/;
+      printf "  --%-11s %s%s\n", $_->{OPT}, $_->{DESC}, $def;
+    }
+    else {
+      print "$_\n"; # Subheadings in the help output
+    }
+  }
+  print "HOMEPAGE\n  $URL\n";
+
+  exit($exitcode);
+}
+
+#----------------------------------------------------------------------

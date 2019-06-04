@@ -11,15 +11,15 @@ Identify phage regions in bacterial genomes for masking purposes
 ## Quick Start
 
 ```bash
-% head -n 2 contigs.fna
+% head -n 4 contigs.fna
 >AE004092.2 Streptococcus pyogenes M1 GAS, complete genome
 TTGTTGATATTCTGTTTTTTCTTTTTTAGTTTTCCACATGAAAAATAGTTGAAAACAATAGCGGTGTCCC
 CTTAAAATGGCTTTTCCACAGGTTGTGGAGAACCCAAATTAACAGTGTTAATTTATTTTCCACAGGTTGT
 GGAAAAACTAACTATTATCCATCGTTCTGTGGAAAACTAGAATAGTTTATGGTAGAATAGTTCTAGAATT
 
-% phastaf contigs.fna > phage.bed
+% phastaf --outdir out contigs.fna
 
-% cat phage.bed
+% cat out/phage.bed
 AE004092.2	529586	570503	370.1
 AE004092.2	778519	821003	370.2
 AE004092.2	1189119	1222648	370.3
@@ -56,6 +56,7 @@ You will need to install all the dependencies manually:
 * diamond >= 0.9
 * bedtools >= 2.0
 * any2fasta >= 0.4
+* sort (GNU or BSD)
 
 ## Feedback
 
@@ -74,8 +75,8 @@ Not published yet.
 
 * Torsten Seemann
 * Jake Lacey
-* Carlus Deneke
 * Sharif Shaaban
 * Federica Palma 
 * Rebecca Ji Bengtsson
 * Nabil-Fareed Alikhan
+* Carlus Deneke

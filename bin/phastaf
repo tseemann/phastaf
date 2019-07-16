@@ -108,8 +108,26 @@ my $bed2 = "phage.bed";
 run_cmd("bedtools merge -i $bed1 -d $igff -c 1 -o count > $bed2");
 msg("Wrote: $bed2");
 
+# filter regions
+my $bed3 = "phage.filtered.bed";
+run_cmd("awk -v mingenes=$mingenes '$4 > mingenes' $bed2 > $bed3");
+msh("Wrote: $bed3");
+
+
+# export fasta of phage sequences
+my $phage_fasta = "phage.fasta";
+run_cmd("bedtools getfasta -fi $fasta -bed $bed3 > $phage_fasta");
+msh("Wrote: $phage_fasta");
+
+
 # END MAIN PROGRAM
 # .........................................................................
+
+
+# Summary
+#my $count_regions = [];
+#msh("Found $count_regions with at least $mingenes genes.")
+
 
 # Say our goodbyes
 my $wallsecs = time - $t0;

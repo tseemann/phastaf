@@ -2,6 +2,8 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ![Don't judge me](https://img.shields.io/badge/Language-Perl_5-steelblue.svg)
 
+:warning: **THIS SOFTWARE IS STILL IN VERY EARLY DEVELOPMENT!**
+
 # phastaf
 
 Identify phage regions in bacterial genomes for masking purposes
